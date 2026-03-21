@@ -1,7 +1,7 @@
 ---
 name: agentmm
 description: "AgentMM memory & log management skill — gives AI agents persistent memory storage and structured logging. Use when the user asks to remember information, recall memories, or record/query logs. Requires env var AGENTMM_API_KEY (format: amm_sk_xxx)."
-homepage: https://github.com/fangwei/agentmm-skills
+homepage: https://github.com/cers-ai/agentmm-skills
 metadata:
   clawdbot:
     emoji: "🧠"

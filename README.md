@@ -59,5 +59,5 @@ agentmm log list --level error --limit 20
 ## 链接
 
 - 服务主页：[agentmm.site](https://agentmm.site)
-- GitHub：[github.com/fangwei/agentmm-skills](https://github.com/fangwei/agentmm-skills)
-- 问题反馈：[GitHub Issues](https://github.com/fangwei/agentmm-skills/issues)
+- GitHub：[github.com/cers-ai/agentmm-skills](https://github.com/cers-ai/agentmm-skills)
+- 问题反馈：[GitHub Issues](https://github.com/cers-ai/agentmm-skills/issues)
