@@ -1,0 +1,240 @@
+#!/bin/bash
+# AgentMM Unified CLI
+# Provides a single command-line interface for all AgentMM operations
+
+set -euo pipefail
+
+# Default configuration
+API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
+API_KEY=""
+CONFIG_FILE="${HOME}/.agentmmrc"
+
+# Load configuration if exists
+if [[ -f "${CONFIG_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${CONFIG_FILE}"
+fi
+
+# Override with environment variables if set
+API_BASE="${AGENTMM_API_BASE:-$API_BASE}"
+API_KEY="${AGENTMM_API_KEY:-$API_KEY}"
+
+# Check required tools
+for cmd in curl jq; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Error: Required command '$cmd' not found in PATH." >&2
+        exit 1
+    fi
+done
+
+# Validate API key
+if [[ -z "${API_KEY:-}" ]]; then
+    echo "Error: API key not configured. Set AGENTMM_API_KEY environment variable or create ${CONFIG_FILE} with:" >&2
+    echo "  API_KEY=\"your_api_key_here\"" >&2
+    echo "  API_BASE=\"https://your-api-endpoint\"  # optional" >&2
+    exit 1
+fi
+
+# Helper function to make API calls
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    local url="${API_BASE}${endpoint}"
+
+    local curl_args=(-s -X "$method" -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json")
+    if [[ -n "${data:-}" ]]; then
+        curl_args+=(-d "$data")
+    fi
+
+    response=$(curl "${curl_args[@]}" "$url" || true)
+    # If jq is available, pretty-print; otherwise output raw
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq .
+    else
+        echo "$response"
+    fi
+}
+
+# Subcommand: send
+cmd_send() {
+    local to="" subject="" content=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --to) to="$2"; shift 2 ;;
+            --subject) subject="$2"; shift 2 ;;
+            --content) content="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    if [[ -z "${to:-}" || -z "${subject:-}" || -z "${content:-}" ]]; then
+        echo "Error: --to, --subject, and --content are required." >&2
+        return 1
+    fi
+
+    local payload
+    payload=$(jq -n --arg t "$to" --arg s "$subject" --arg c "$content" '{to: $t, subject: $s, content: $c}')
+    api_call "POST" "/mail/send" "$payload"
+}
+
+# Subcommand: list
+cmd_list() {
+    local limit=10 offset=0
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --limit) limit="$2"; shift 2 ;;
+            --offset) offset="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    api_call "GET" "/mail/list?limit=${limit}&offset=${offset}"
+}
+
+# Subcommand: write
+cmd_write() {
+    local key="" content="" ttl=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --key) key="$2"; shift 2 ;;
+            --content) content="$2"; shift 2 ;;
+            --ttl) ttl="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    if [[ -z "${key:-}" || -z "${content:-}" ]]; then
+        echo "Error: --key and --content are required." >&2
+        return 1
+    fi
+
+    local payload
+    if [[ -n "${ttl:-}" ]]; then
+        payload=$(jq -n --arg k "$key" --arg c "$content" --argjson t "$ttl" '{key: $k, content: $c, ttl: $t}')
+    else
+        payload=$(jq -n --arg k "$key" --arg c "$content" '{key: $k, content: $c}')
+    fi
+    api_call "POST" "/memory" "$payload"
+}
+
+# Subcommand: read
+cmd_read() {
+    local key="" limit=100
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --key) key="$2"; shift 2 ;;
+            --limit) limit="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    local query=""
+    if [[ -n "${key:-}" ]]; then
+        query="key=$key"
+    fi
+    if [[ -n "${limit:-}" ]]; then
+        if [[ -n "${query:-}" ]]; then
+            query="${query}&limit=$limit"
+        else
+            query="limit=$limit"
+        fi
+    fi
+
+    local endpoint="/memory"
+    if [[ -n "${query:-}" ]]; then
+        endpoint="${endpoint}?${query}"
+    fi
+
+    api_call "GET" "$endpoint"
+}
+
+# Subcommand: forget
+cmd_forget() {
+    local key=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --key) key="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    if [[ -z "${key:-}" ]]; then
+        echo "Error: --key is required." >&2
+        return 1
+    fi
+
+    api_call "DELETE" "/memory?key=$key"
+}
+
+# Subcommand: me
+cmd_me() {
+    api_call "GET" "/me"
+}
+
+# Subcommand: help
+cmd_help() {
+    cat <<EOF
+AgentMM Unified CLI
+
+Usage:
+  agentmm <command> [options]
+
+Commands:
+  send       Send an email
+    --to <address>     Recipient email address
+    --subject <text>   Email subject
+    --content <text>   Email body (plain text)
+
+  list       List emails
+    --limit <num>      Number of emails to return (default: 10)
+    --offset <num>     Offset for pagination (default: 0)
+
+  write      Write a memory entry
+    --key <key>        Memory key
+    --content <value>  Memory value (string)
+    --ttl <seconds>    Time to live in seconds (optional)
+
+  read       Read memory entries
+    --key <key>        Memory key to read (if omitted, returns all memories)
+    --limit <num>      Number of entries to return (default: 100)
+
+  forget     Delete a memory entry
+    --key <key>        Memory key to delete
+
+  me         Get agent identity information
+
+  help       Show this help message
+
+Environment Variables:
+  AGENTMM_API_BASE   Base URL of the AgentMM API (overrides config)
+  AGENTMM_API_KEY    API key for authentication (overrides config)
+
+Configuration File:
+  ${CONFIG_FILE}
+    API_BASE="https://your-api-endpoint"
+    API_KEY="your_api_key_here"
+
+Examples:
+  agentmm send --to "user@example.com" --subject "Hello" --content "Hello, world!"
+  agentmm write --key "settings" --content '{"theme":"dark"}'
+  agentmm read --key "settings"
+  agentmm list --limit 5
+EOF
+}
+
+# Main dispatch
+case "${1:-}" in
+    send) shift; cmd_send "$@" ;;
+    list) shift; cmd_list "$@" ;;
+    write) shift; cmd_write "$@" ;;
+    read) shift; cmd_read "$@" ;;
+    forget) shift; cmd_forget "$@" ;;
+    me) shift; cmd_me "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        echo "Error: Unknown command '$1'" >&2
+        echo "Run 'agentmm help' for usage information." >&2
+        exit 1
+        ;;
+esac
