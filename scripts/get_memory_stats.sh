@@ -1,40 +1,21 @@
 #!/bin/bash
+# get_memory_stats.sh — 获取记忆库统计概览
+# 用法: get_memory_stats.sh
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/memory/stats (GET, only)
+#   Local files read: none
+#   Local files written: none
 set -euo pipefail
 
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
-API_KEY="amm_sk_c37620f5a839416398b9364512aa8a17"
+API_BASE="${AGENTMM_API_BASE:-https://api.agentmm.site}"
+API_KEY="${AGENTMM_API_KEY:?Error: AGENTMM_API_KEY environment variable is not set. Format: amm_sk_xxx}"
 
-# Parse arguments
-DAYS=30
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --days)
-      DAYS="$2"
-      shift 2
-      ;;
-    *)
-      echo "Unknown parameter: $1"
-      exit 1
-      ;;
-  esac
-done
-
-# Build query string
-QUERY=""
-if [[ -n "${DAYS:-}" ]]; then
-  if [[ -n "$QUERY" ]]; then
-    QUERY="$QUERY&days=$DAYS"
-  else
-    QUERY="days=$DAYS"
-  fi
+if [[ $# -gt 0 ]]; then
+  echo "Error: get_memory_stats.sh takes no parameters." >&2
+  exit 1
 fi
 
-# If QUERY is empty, we just hit the endpoint without query
-if [[ -n "$QUERY" ]]; then
-  curl -s -X GET "$API_BASE/memory/stats?$QUERY" \
-    -H "Authorization: Bearer $API_KEY" | jq .
-else
-  curl -s -X GET "$API_BASE/memory/stats" \
-    -H "Authorization: Bearer $API_KEY" | jq .
-fi
+curl -s -X GET "$API_BASE/memory/stats" \
+  -H "Authorization: Bearer $API_KEY" | jq .

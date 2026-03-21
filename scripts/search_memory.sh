@@ -1,8 +1,16 @@
 #!/bin/bash
+# search_memory.sh — 关键词搜索记忆
+# 用法: search_memory.sh --query <搜索词> [--limit N]
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/memory/search (POST, only)
+#   Local files read: none
+#   Local files written: none
 set -euo pipefail
 
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
-API_KEY="amm_sk_c37620f5a839416398b9364512aa8a17"
+API_BASE="${AGENTMM_API_BASE:-https://api.agentmm.site}"
+API_KEY="${AGENTMM_API_KEY:?Error: AGENTMM_API_KEY environment variable is not set. Format: amm_sk_xxx}"
 
 # Parse arguments
 QUERY=""
@@ -41,13 +49,14 @@ if [[ -z "${QUERY:-}" ]]; then
   exit 1
 fi
 
-# Build JSON payload for POST request
-PAYLOAD="{\"query\":\"$QUERY\",\"limit\":$LIMIT}"
+# Build JSON payload safely via jq (no shell interpolation)
+PAYLOAD=$(jq -n --arg q "$QUERY" --argjson l "$LIMIT" '{query: $q, limit: $l}')
 if [[ -n "${TAGS:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg tags "$TAGS" '. + {tags: ($tags | split(","))}')"
+  TAGS_ARR=$(echo "$TAGS" | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+  PAYLOAD=$(echo "$PAYLOAD" | jq --argjson t "$TAGS_ARR" '. + {tags: $t}')
 fi
 if [[ "$FUZZY" == true ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq '. + {fuzzy: true}')"
+  PAYLOAD=$(echo "$PAYLOAD" | jq '. + {fuzzy: true}')
 fi
 
 curl -s -X POST "$API_BASE/memory/search" \

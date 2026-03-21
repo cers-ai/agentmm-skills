@@ -1,235 +1,191 @@
-# AgentMM Skill - Enhanced Version
+---
+name: agentmm
+description: "AgentMM memory & log management skill — gives AI agents persistent memory storage and structured logging. Use when the user asks to remember information, recall memories, or record/query logs. Requires env var AGENTMM_API_KEY (format: amm_sk_xxx)."
+homepage: https://github.com/fangwei/agentmm-skills
+metadata:
+  clawdbot:
+    emoji: "🧠"
+    requires:
+      env:
+        - AGENTMM_API_KEY
+      binaries:
+        - curl
+        - jq
+    primaryEnv: AGENTMM_API_KEY
+    files:
+      - "scripts/*"
+---
 
-This skill provides advanced integration with AgentMM API for intelligent agent memory operations and email sending with smart features.
+# AgentMM — 记忆与日志管理
 
-## API Endpoint
-https://api.agentmm.site/functions/v1/agent-api
+## 认证配置
 
-## Authentication
-Bearer Token: amm_sk_c37620f5a839416398b9364512aa8a17
+本技能通过环境变量读取凭证，**不在任何文件中存储密钥**：
 
-
-## Enhanced Features
-
-### Intelligent Memory System
-- Categorized memory storage with tags
-- Full-text search capabilities
-- Context-aware memory retrieval
-- Automatic memory expiration and cleanup
-- Memory linking and relationship tracking
-- Backup and export functionality
-
-### Smart Email System
-- Email templating with variable substitution
-- Read receipt tracking and delivery status
-- Conversation threading and grouping
-- HTML email support
-- Attachment handling
-- Scheduled email sending
-- Smart categorization and filtering
-
-## Supported Actions
-
-### Memory Operations
-- `write_memory`: Write a memory entry with tags and metadata
-- `read_memory`: Read memory entries with advanced filtering
-- `search_memory`: Full-text search across memories
-- `forget_memory`: Delete a memory entry
-- `update_memory`: Update existing memory entry
-- `list_memory_tags`: List all used tags
-- `get_memory_stats`: Get memory usage statistics
-- `backup_memory`: Export memories to file
-- `restore_memory`: Import memories from file
-
-### Email Operations
-- `send_mail`: Send an email (plain text or HTML)
-- `send_template_mail`: Send email using predefined template
-- `list_mail`: List emails with advanced filtering
-- `search_mail`: Search emails by content
-- `get_mail_thread`: Get conversation thread
-- `track_email`: Get email tracking information
-- `schedule_email`: Schedule email for later sending
-- `get_email_stats`: Get email usage statistics
-
-## Usage
-
-Each action is implemented as a script in the `scripts/` directory. You can invoke them via the `exec` tool or directly from the command line.
-
-### Memory Scripts
-
-#### write_memory.sh
-Write a memory entry with enhanced features.
-
-Parameters:
-- `--key`: Memory key (unique identifier)
-- `--content`: Memory content (string)
-- `--tags`: Comma-separated tags for categorization (optional)
-- `--ttl`: Time to live in seconds (optional, default: 86400 - 24 hours)
-- `--context`: Context information for better retrieval (optional)
-- `--related`: Related memory keys (comma-separated, optional)
-
-Example:
 ```bash
-./scripts/write_memory.sh \
-  --key "project_x_meeting_20260315" \
-  --content "Discussed Q2 roadmap, decided to prioritize feature A" \
-  --tags "project,x,meeting,roadmap" \
-  --context "Q2 planning session" \
-  --related "project_x_backlog,project_x_stakeholders"
+# 必须设置（格式：amm_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx）
+export AGENTMM_API_KEY="amm_sk_your_key_here"
+
+# 可选，默认为 https://api.agentmm.site
+export AGENTMM_API_BASE="https://api.agentmm.site"
 ```
 
-#### read_memory.sh
-Read memory entries with filtering options.
+所有脚本启动时会自动读取这两个变量，若 `AGENTMM_API_KEY` 未设置则报错退出。
 
-Parameters:
-- `--key`: Memory key to read (if omitted, returns all memories)
-- `--tags`: Filter by tags (comma-separated)
-- `--context-filter`: Filter by context (optional)
-- `--limit`: Number of entries to return (default 100)
-- `--offset`: Offset for pagination (default 0)
-- `--sort`: Sort by field (created_at, updated_at, key) (default: created_at)
+## 功能概览
+
+### 🧠 记忆系统
+- 带标签、上下文、关联的结构化记忆存储
+- 基于关键词的记忆搜索（POST /memory/search）
+- 增量同步（GET /memory/changes）和批量写入（POST /memory/batch）
+- 之前版本的冲突检测（expected_version）
+- 软删除（遗忘）与重要性评分
+
+### 📋 日志系统
+- 写入单条/批量日志，支持 debug/info/warn/error/fatal 五个级别
+- 按级别、分类、task_id 过滤查询
+- 日志统计（错误率、平均耗时、级别分布）
+
+## 支持的操作
+
+### 记忆操作
+- `write_memory`: 写入记忆（key + content，可附加 tags/context/related）
+- `read_memory`: 查询记忆（指定 key 或列出全部）
+- `search_memory`: 关键词搜索记忆
+- `update_memory`: 更新记忆内容或标签
+- `forget_memory`: 遗忘（软删除）指定记忆
+- `get_memory_stats`: 查看记忆统计概览
+
+### 日志操作（使用 `agentmm` CLI）
+- `agentmm log write`: 写入日志
+- `agentmm log list`: 查询日志列表
+- `agentmm log stats`: 获取日志统计
+
+## 使用说明
+
+所有脚本位于 `scripts/` 目录，可通过 `exec` 工具调用或直接在命令行运行。
+
+### 记忆脚本
+
+#### write_memory.sh
+写入或更新一条记忆。
+
+```bash
+export AGENTMM_API_KEY="amm_sk_your_key"
+./scripts/write_memory.sh \
+  --key "project_x_meeting_20260315" \
+  --content "讨论了 Q2 路线，决定优先做 feature A" \
+  --tags "project,meeting,roadmap" \
+  --context "Q2 planning session"
+```
+
+参数：
+- `--key`：记忆唯一标识（必填）
+- `--content`：记忆内容（必填）
+- `--tags`：逗号分隔的标签（可选）
+- `--context`：记忆上下文（可选）
+- `--related`：关联记忆的 key，逗号分隔（可选）
+
+#### read_memory.sh
+查询记忆。
+
+参数：
+- `--key`：指定 key （省略则返回所有记忆）
+- `--limit`：返回条数（默认 100）
+- `--offset`：分页偏移（默认 0）
+- `--sort`：排序字段 created_at / updated_at / importance_score（默认 created_at）
 
 #### search_memory.sh
-Full-text search across memories.
+关键词搜索记忆。
 
-Parameters:
-- `--query`: Search query string
-- `--tags`: Filter by tags (optional)
-- `--limit`: Number of results (default 50)
-- `--fuzzy`: Enable fuzzy matching (default: false)
+参数：
+- `--query`：搜索词（必填）
+- `--limit`：返回条数（默认 50）
 
 #### update_memory.sh
-Update existing memory entry.
+更新已有记忆。
 
-Parameters:
-- `--key`: Memory key to update
-- `--content`: New content (optional)
-- `--tags`: New tags (optional)
-- `--context`: New context (optional)
-- `--add-tags`: Tags to add (optional)
-- `--remove-tags`: Tags to remove (optional)
+参数：
+- `--key`：记忆 key（必填）
+- `--content`：新内容（可选）
+- `--tags`：替换所有标签，逗号分隔（可选）
+- `--context`：新上下文（可选）
 
 #### forget_memory.sh
-Delete a memory entry.
+遗忘（软删除）一条记忆。
 
-Parameters:
-- `--key`: Memory key to delete
-
-#### list_memory_tags.sh
-List all used tags with usage counts.
+参数：
+- `--key`：记忆 key（必填）
 
 #### get_memory_stats.sh
-Get memory usage statistics.
+查看记忆库统计概览（总条数、活跃条数、嵌入覆盖率等）。
 
-Parameters:
-- `--days`: Number of days to look back (default: 30)
+### 日志操作（统一 CLI）
 
-#### backup_memory.sh
-Export memories to file.
+使用 `scripts/agentmm` 统一命令操作日志：
 
-Parameters:
-- `--output`: Output file path (default: memories_backup_YYYYMMDD_HHMMSS.json)
-- `--format`: Format (json, csv) (default: json)
-- `--tags`: Filter by tags (optional)
-- `--days`: Only memories from last N days (optional)
+```bash
+export AGENTMM_API_KEY="amm_sk_your_key"
 
-#### restore_memory.sh
-Import memories from file.
+# 写入日志
+./scripts/agentmm log write --level info --title "任务完成" --content "详细过程" --task-id task_abc
 
-Parameters:
-- `--input`: Input file path
-- `--merge`: Merge with existing memories (default: true)
-- `--overwrite`: Overwrite existing keys (default: false)
+# 查询日志
+./scripts/agentmm log list --level error --limit 20
 
-### Email Scripts
+# 查看统计
+./scripts/agentmm log stats
+```
 
-#### send_mail.sh
-Send an email.
+## 安装
 
-Parameters:
-- `--to`: Recipient email address
-- `--subject`: Email subject
-- `--body`: Email body (plain text)
-- `--html`: HTML body (optional, if provided sends as HTML)
-- `--cc`: CC recipients (comma-separated, optional)
-- `--bcc`: BCC recipients (comma-separated, optional)
-- `--reply-to`: Reply-To address (optional)
-- `--attachments`: File paths to attach (comma-separated, optional)
-- `--track`: Enable read tracking (default: true)
+```bash
+clawhub install agentmm
+```
 
-#### send_template_mail.sh
-Send email using predefined template.
+或手动克隆后复制到 skills 目录：
 
-Parameters:
-- `--template`: Template name (welcome, meeting_invite, follow_up, etc.)
-- `--to`: Recipient email address
-- `--vars`: Template variables as key=value pairs (comma-separated)
-- `--cc`: CC recipients (optional)
-- `--bcc`: BCC recipients (optional)
-- `--track`: Enable read tracking (default: true)
+```bash
+git clone https://github.com/fangwei/agentmm-skills
+cp -r agentmm-skills ~/.openclaw/skills/agentmm
+```
 
-#### list_mail.sh
-List emails with advanced filtering.
+## 注意事项
+- 所有脚本依赖 `curl` 和 `jq`，请确保已安装。
+- API Key 必须通过环境变量 `AGENTMM_API_KEY` 提供，**不得硬编码到任何文件**。
 
-Parameters:
-- `--direction`: sent/received/all (default: all)
-- `--limit`: Number of emails to return (default 50)
-- `--offset`: Offset for pagination (default 0)
-- `--search`: Search in subject/body (optional)
-- `--from`: Filter by sender email (optional)
-- `--to`: Filter by recipient email (optional)
-- `--start-date`: Start date (YYYY-MM-DD, optional)
-- `--end-date`: End date (YYYY-MM-DD, optional)
-- `--has-attachments`: Filter emails with attachments (true/false)
-- `--is-tracked`: Filter tracked emails (true/false)
+---
 
-#### search_mail.sh
-Search emails by content.
+## External Endpoints
 
-Parameters:
-- `--query`: Search query string
-- `--direction`: sent/received/all (default: all)
-- `--limit`: Number of results (default 50)
-- `--fuzzy`: Enable fuzzy matching (default: false)
+本技能调用以下外部端点。所有请求均通过 HTTPS 加密传输，并携带 `Authorization: Bearer` 头进行认证。
 
-#### get_mail_thread.sh
-Get conversation thread.
+| 端点 | 方法 | 发送数据 | 说明 |
+|---|---|---|---|
+| `https://api.agentmm.site/memory` | GET / POST / DELETE | key, content, tags, context | 读写/删除记忆 |
+| `https://api.agentmm.site/memory/search` | POST | query, limit, threshold | 关键词搜索记忆 |
+| `https://api.agentmm.site/memory/changes` | GET | since, limit, offset | 增量同步记忆变更 |
+| `https://api.agentmm.site/memory/stats` | GET | — | 记忆库统计 |
+| `https://api.agentmm.site/log` | POST | level, title, content, metadata | 写入日志 |
+| `https://api.agentmm.site/log/list` | GET | level, category, task_id, since, limit | 查询日志 |
+| `https://api.agentmm.site/log/stats` | GET | since | 日志统计 |
+| `https://api.agentmm.site/me` | GET | — | 查询 Agent 信息 |
+| `https://api.agentmm.site/server/time` | GET | — | 健康检查（无需认证）|
 
-Parameters:
-- `--thread-id`: Thread identifier (or use --subject to find thread)
-- `--subject`: Subject to find thread for
-- `--limit`: Maximum emails in thread (default 100)
+**不调用任何其他外部 URL。** 如果你的 `AGENTMM_API_BASE` 指向自部署实例，则请求会发往该地址而非上述默认地址。
 
-#### track_email.sh
-Get email tracking information.
+---
 
-Parameters:
-- `--email-id`: Email ID to track
-- `--include-events`: Include open/click events (default: true)
+## Security & Privacy
 
-#### schedule_email.sh
-Schedule email for later sending.
+- **离开本机的数据**：记忆内容（key/content/tags）、日志内容（title/content/metadata）会通过 HTTPS 发送到 AgentMM 服务端并持久化存储。
+- **不离开本机的数据**：你的文件系统内容、其他工具的输出、本地配置文件。
+- **凭证处理**：`AGENTMM_API_KEY` 仅通过环境变量读取，**从不写入任何文件**，不会出现在日志或错误输出中。
+- **本地文件访问**：`sync_daemon.sh` 会读写 `~/.agentmm_sync_state`（一个只包含时间戳的纯文本文件），其余脚本无本地文件读写。
+- **自治调用说明**：本技能设计为由 Agent 自主调用（无需每次确认）。如需限制，可在 OpenClaw 配置中设置 `require_approval: true`。
 
-Parameters:
-- `--to`: Recipient email address
-- `--subject`: Email subject
-- `--body`: Email body
-- `--send-at`: Timestamp to send (ISO 8601 format)
-- `--html`: HTML body (optional)
-- `--track`: Enable read tracking (default: true)
+---
 
-#### get_email_stats.sh
-Get email usage statistics.
+## Trust Statement
 
-Parameters:
-- `--days`: Number of days to look back (default: 30)
-- `--direction`: sent/received/all (default: all)
-
-## Installation
-This skill is installed via `skillhub install AgentMM` or manually copied to the skills directory.
-
-## Notes
-- All scripts require `curl` and `jq` for JSON processing.
-- The API key is hardcoded in the scripts for simplicity. For production use, consider using environment variables or a secure vault.
-- Templates are stored in the `templates/` directory.
-- Memory backups are stored in the `backups/` directory by default.
+使用本技能即表示你同意将记忆和日志数据发送至 AgentMM 服务（`api.agentmm.site`）。请仅在你信任 AgentMM 服务提供方的情况下安装使用。如需自托管，将 `AGENTMM_API_BASE` 指向你自己的实例即可完全掌控数据去向。

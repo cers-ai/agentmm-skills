@@ -1,75 +1,52 @@
 #!/bin/bash
+# update_memory.sh — 更新已有记忆（内部使用 POST /memory 实现 upsert）
+# 用法: update_memory.sh --key <key> [--content <new>] [--tags tag1,tag2] [--context <ctx>]
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/memory (POST, only)
+#   Local files read: none
+#   Local files written: none
 set -euo pipefail
 
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
-API_KEY="amm_sk_c37620f5a839416398b9364512aa8a17"
+API_BASE="${AGENTMM_API_BASE:-https://api.agentmm.site}"
+API_KEY="${AGENTMM_API_KEY:?Error: AGENTMM_API_KEY environment variable is not set. Format: amm_sk_xxx}"
 
-# Parse arguments
 KEY=""
 CONTENT=""
 TAGS=""
-CONTEXT=""
-ADD_TAGS=""
-REMOVE_TAGS=""
+CONTEXT_VAL=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --key)
-      KEY="$2"
-      shift 2
-      ;;
-    --content)
-      CONTENT="$2"
-      shift 2
-      ;;
-    --tags)
-      TAGS="$2"
-      shift 2
-      ;;
-    --context)
-      CONTEXT="$2"
-      shift 2
-      ;;
-    --add-tags)
-      ADD_TAGS="$2"
-      shift 2
-      ;;
-    --remove-tags)
-      REMOVE_TAGS="$2"
-      shift 2
-      ;;
-    *)
-      echo "Unknown parameter: $1"
-      exit 1
-      ;;
+    --key)     KEY="$2";         shift 2 ;;
+    --content) CONTENT="$2";     shift 2 ;;
+    --tags)    TAGS="$2";        shift 2 ;;
+    --context) CONTEXT_VAL="$2"; shift 2 ;;
+    *) echo "Error: Unknown parameter: $1" >&2; exit 1 ;;
   esac
 done
 
-# Validate required parameters
 if [[ -z "${KEY:-}" ]]; then
-  echo "Error: --key is required."
+  echo "Error: --key is required." >&2
+  exit 1
+fi
+if [[ -z "${CONTENT:-}" && -z "${TAGS:-}" && -z "${CONTEXT_VAL:-}" ]]; then
+  echo "Error: at least one of --content, --tags, or --context is required." >&2
   exit 1
 fi
 
-# Build JSON payload
-PAYLOAD="{\"key\":\"$KEY\"}"
-if [[ -n "${CONTENT:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg content "$CONTENT" '. + {content: $content}')"
-fi
-if [[ -n "${TAGS:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg tags "$TAGS" '. + {tags: ($tags | split(","))}')"
-fi
-if [[ -n "${CONTEXT:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg context "$CONTEXT" '. + {context: $context}')"
-fi
-if [[ -n "${ADD_TAGS:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg add_tags "$ADD_TAGS" '. + {add_tags: ($add_tags | split(","))}')"
-fi
-if [[ -n "${REMOVE_TAGS:-}" ]]; then
-  PAYLOAD="$(echo "$PAYLOAD" | jq --arg remove_tags "$REMOVE_TAGS" '. + {remove_tags: ($remove_tags | split(","))}')"
-fi
+# API 使用 POST /memory 实现写入和更新（upsert）
+PAYLOAD=$(jq -n --arg k "$KEY" '{key: $k}')
 
-curl -s -X PUT "$API_BASE/memory" \
+[[ -n "${CONTENT:-}" ]] && PAYLOAD=$(echo "$PAYLOAD" | jq --arg c "$CONTENT" '. + {content: $c}')
+if [[ -n "${TAGS:-}" ]]; then
+  TAGS_ARR=$(echo "$TAGS" | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+  PAYLOAD=$(echo "$PAYLOAD" | jq --argjson t "$TAGS_ARR" '. + {tags: $t}')
+fi
+[[ -n "${CONTEXT_VAL:-}" ]] && PAYLOAD=$(echo "$PAYLOAD" | jq --arg ctx "$CONTEXT_VAL" '. + {context: $ctx}')
+
+curl -s -X POST "$API_BASE/memory" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD" | jq .

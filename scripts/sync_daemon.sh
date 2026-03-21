@@ -1,111 +1,96 @@
 #!/bin/bash
+# sync_daemon.sh — 轻量级增量同步守护进程
+# 用法: sync_daemon.sh [--interval <秒>] [--state-file <路径>]
+#
+# 定期调用 GET /memory/changes 获取自上次同步以来的变更，输出到 stdout。
+# 将 last_sync_time 持久化到 --state-file（默认：~/.agentmm_sync_state）。
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/memory/changes (GET, only)
+#   Local files read: ~/.agentmm_sync_state (timestamp only)
+#   Local files written: ~/.agentmm_sync_state (timestamp only)
 set -euo pipefail
 
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
-API_KEY="amm_sk_c37620f5a839416398b9364512aa8a17"
-LOCAL_DB="/root/.openclaw/workspace/skills/AgentMM/data/local_memory.db"
-LOG_FILE="/root/.openclaw/workspace/skills/AgentMM/data/sync_daemon.log"
+API_BASE="${AGENTMM_API_BASE:-https://api.agentmm.site}"
+API_KEY="${AGENTMM_API_KEY:?Error: AGENTMM_API_KEY environment variable is not set. Format: amm_sk_xxx}"
 
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+INTERVAL=60
+STATE_FILE="${HOME}/.agentmm_sync_state"
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --interval)   INTERVAL="$2";   shift 2 ;;
+    --state-file) STATE_FILE="$2"; shift 2 ;;
+    *) echo "Error: Unknown parameter: $1" >&2; exit 1 ;;
+  esac
+done
+
+log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
+
+# 读取上次同步时间
+load_state() {
+  if [[ -f "$STATE_FILE" ]]; then
+    cat "$STATE_FILE"
+  else
+    echo "0"
+  fi
 }
 
-# Ensure local DB exists
-if [ ! -f "$LOCAL_DB" ]; then
-  log "Local database not found at $LOCAL_DB. Exiting."
-  exit 1
-fi
+# 保存同步时间
+save_state() { echo "$1" > "$STATE_FILE"; }
 
-log "Starting sync daemon for AgentMM local cache."
+# 单轮增量拉取
+pull_changes() {
+  local since="$1"
+  local offset=0
+  local total=0
+
+  while true; do
+    RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+      "$API_BASE/memory/changes?since=${since}&limit=200&offset=${offset}" \
+      -H "Authorization: Bearer $API_KEY")
+
+    HTTP_STATUS=$(echo "$RESP" | tail -n1 | sed 's/^HTTP_STATUS://')
+    BODY=$(echo "$RESP" | sed '$d')
+
+    if [[ ! "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+      log "ERROR: /memory/changes returned HTTP $HTTP_STATUS"
+      return 1
+    fi
+
+    COUNT=$(echo "$BODY" | jq '.changes | length')
+    SERVER_TIME=$(echo "$BODY" | jq '.server_time')
+    HAS_MORE=$(echo "$BODY" | jq -r '.has_more')
+    total=$((total + COUNT))
+
+    # 输出变更条目（调用方可根据需要处理）
+    echo "$BODY" | jq -c '.changes[]' 2>/dev/null || true
+
+    if [[ "$HAS_MORE" != "true" ]]; then
+      echo "$SERVER_TIME"  # 最后一行输出新的 server_time
+      break
+    fi
+    offset=$((offset + 200))
+  done
+
+  log "Pulled $total change(s) since $since"
+}
+
+log "sync_daemon started. interval=${INTERVAL}s, state_file=${STATE_FILE}"
 
 while true; do
-  # Find records that are not synced or have sync attempts > 0 (i.e., failed syncs)
-  # We limit to 50 records per cycle to avoid long-running transactions.
-  UNSYNCED=$(sqlite3 "$LOCAL_DB" "SELECT key FROM memories WHERE synced=0 OR sync_attempts>0 LIMIT 50;" 2>>"$LOG_FILE")
-  
-  if [ -z "$UNSYNCED" ]; then
-    # No unsynced records, sleep and continue
-    sleep 30
-    continue
+  LAST_SYNC=$(load_state)
+  log "Pulling changes since ${LAST_SYNC}..."
+
+  # 收集所有行输出，最后一行为新的 server_time
+  OUTPUT=$(pull_changes "$LAST_SYNC" 2>&1) || { log "Pull failed, will retry."; sleep "$INTERVAL"; continue; }
+  NEW_TIME=$(echo "$OUTPUT" | tail -n1)
+
+  if [[ "$NEW_TIME" =~ ^[0-9]+$ && "$NEW_TIME" -gt 0 ]]; then
+    save_state "$NEW_TIME"
+    log "State updated to $NEW_TIME"
   fi
-  
-  log "Found unsynced records: $UNSYNCED"
-  
-  for KEY in $UNSYNCED; do
-    # Fetch the record from local DB
-    RECORD=$(sqlite3 "$LOCAL_DB" "SELECT key, content, tags, context, related, created_at, updated_at FROM memories WHERE key='$KEY';" 2>>"$LOG_FILE")
-    if [ -z "$RECORD" ]; then
-      log "Record $KEY not found in local DB (maybe deleted). Skipping."
-      continue
-    fi
-    
-    # Parse the record (fields separated by | because we will use a separator in the SELECT below? Actually we didn't use a separator in the SELECT above.
-    # Let's change the SELECT to use a separator. But for simplicity, we'll assume no spaces in key and use the fact that sqlite3 outputs in list mode with | separator? 
-    # We'll instead use the same method as in read_memory.sh: concatenate with a separator and replace NULLs.
-    # We'll do it inline:
-    PARSED=$(sqlite3 "$LOCAL_DB" "SELECT 
-        COALESCE(key, '') || '|' || 
-        COALESCE(content, '') || '|' || 
-        COALESCE(tags, '') || '|' || 
-        COALESCE(context, '') || '|' || 
-        COALESCE(related, '') || '|' || 
-        CAST(COALESCE(created_at, 0) AS TEXT) || '|' || 
-        CAST(COALESCE(updated_at, 0) AS TEXT)
-        FROM memories WHERE key='$KEY';" 2>>"$LOG_FILE")
-    if [ -z "$PARSED" ]; then
-      log "Failed to parse record $KEY. Skipping."
-      continue
-    fi
-    
-    IFS='|' read -r l_key l_content l_tags l_context l_related l_created_at l_updated_at <<< "$PARSED"
-    
-    # Convert tags and related from stored JSON array strings to JSON arrays for backend
-    TAGS_JSON="$l_tags"
-    RELATED_JSON="$l_related"
-    # If they are empty strings, set to empty array
-    if [ -z "$l_tags" ]; then
-      TAGS_JSON="[]"
-    fi
-    if [ -z "$l_related" ]; then
-      RELATED_JSON="[]"
-    fi
-    
-    # Build payload
-    PAYLOAD="{\"key\":\"$l_key\",\"content\":\"$l_content\"}"
-    if [ -n "$l_tags" ] || [ "$l_tags" = "[]" ]; then
-      # Only add tags if we have a non-empty array or even empty array to override backend?
-      # We'll send the tags as is.
-      PAYLOAD="$(echo "$PAYLOAD" | jq --argjson tags "$TAGS_JSON" '. + {tags: $tags}')"
-    fi
-    if [ -n "$l_context" ]; then
-      PAYLOAD="$(echo "$PAYLOAD" | jq --arg context "$l_context" '. + {context: $context}')"
-    fi
-    if [ -n "$l_related" ] || [ "$l_related" = "[]" ]; then
-      PAYLOAD="$(echo "$PAYLOAD" | jq --argjson related "$RELATED_JSON" '. + {related: $related}')"
-    fi
-    
-    # Attempt to sync
-    BACKEND_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API_BASE/memory" \
-      -H "Authorization: Bearer $API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD") || true
-    
-    HTTP_STATUS=$(echo "$BACKEND_RESPONSE" | tail -n1 | sed 's/^HTTP_STATUS://')
-    RESPONSE_BODY=$(echo "$BACKEND_RESPONSE" | sed '$d')
-    
-    if [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]] && echo "$RESPONSE_BODY" | grep -q '"success":true'; then
-      # Success: mark as synced, reset sync_attempts, update updated_at to now
-      NOW=$(date +%s)
-      sqlite3 "$LOCAL_DB" "UPDATE memories SET synced=1, sync_attempts=0, updated_at=$NOW WHERE key='$l_key';" 2>>"$LOG_FILE"
-      log "Successfully synced record $l_key."
-    else
-      # Failed: increment sync_attempts, update updated_at
-      NOW=$(date +%s)
-      sqlite3 "$LOCAL_DB" "UPDATE memories SET sync_attempts=sync_attempts+1, updated_at=$NOW WHERE key='$l_key';" 2>>"$LOG_FILE"
-      log "Failed to sync record $l_key (HTTP $HTTP_STATUS). Response: $RESPONSE_BODY"
-    fi
-  done
-  
-  # Sleep before next cycle
-  sleep 30
+
+  sleep "$INTERVAL"
 done

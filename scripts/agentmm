@@ -1,11 +1,16 @@
 #!/bin/bash
-# AgentMM Unified CLI
-# Provides a single command-line interface for all AgentMM operations
+# agentmm — AgentMM 统一 CLI，覆盖记忆和日志所有操作
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/* (GET/POST/DELETE)
+#   Local files read: ~/.agentmmrc (optional config, if present)
+#   Local files written: none
 
 set -euo pipefail
 
 # Default configuration
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
+API_BASE="https://api.agentmm.site"
 API_KEY=""
 CONFIG_FILE="${HOME}/.agentmmrc"
 
@@ -56,51 +61,17 @@ api_call() {
     fi
 }
 
-# Subcommand: send
-cmd_send() {
-    local to="" subject="" content=""
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --to) to="$2"; shift 2 ;;
-            --subject) subject="$2"; shift 2 ;;
-            --content) content="$2"; shift 2 ;;
-            *) echo "Unknown option: $1" >&2; return 1 ;;
-        esac
-    done
-
-    if [[ -z "${to:-}" || -z "${subject:-}" || -z "${content:-}" ]]; then
-        echo "Error: --to, --subject, and --content are required." >&2
-        return 1
-    fi
-
-    local payload
-    payload=$(jq -n --arg t "$to" --arg s "$subject" --arg c "$content" '{to: $t, subject: $s, content: $c}')
-    api_call "POST" "/mail/send" "$payload"
-}
-
-# Subcommand: list
-cmd_list() {
-    local limit=10 offset=0
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --limit) limit="$2"; shift 2 ;;
-            --offset) offset="$2"; shift 2 ;;
-            *) echo "Unknown option: $1" >&2; return 1 ;;
-        esac
-    done
-
-    api_call "GET" "/mail/list?limit=${limit}&offset=${offset}"
-}
-
 # Subcommand: write
 cmd_write() {
-    local key="" content="" ttl=""
+    local key="" content="" tags="" context_val="" related=""
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --key) key="$2"; shift 2 ;;
-            --content) content="$2"; shift 2 ;;
-            --ttl) ttl="$2"; shift 2 ;;
-            *) echo "Unknown option: $1" >&2; return 1 ;;
+            --key)     key="$2";         shift 2 ;;
+            --content) content="$2";     shift 2 ;;
+            --tags)    tags="$2";        shift 2 ;;
+            --context) context_val="$2"; shift 2 ;;
+            --related) related="$2";     shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
         esac
     done
 
@@ -110,43 +81,37 @@ cmd_write() {
     fi
 
     local payload
-    if [[ -n "${ttl:-}" ]]; then
-        payload=$(jq -n --arg k "$key" --arg c "$content" --argjson t "$ttl" '{key: $k, content: $c, ttl: $t}')
-    else
-        payload=$(jq -n --arg k "$key" --arg c "$content" '{key: $k, content: $c}')
+    payload=$(jq -n --arg k "$key" --arg c "$content" '{key: $k, content: $c}')
+    if [[ -n "${tags:-}" ]]; then
+        local tags_arr
+        tags_arr=$(echo "$tags" | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+        payload=$(echo "$payload" | jq --argjson t "$tags_arr" '. + {tags: $t}')
+    fi
+    [[ -n "${context_val:-}" ]] && payload=$(echo "$payload" | jq --arg ctx "$context_val" '. + {context: $ctx}')
+    if [[ -n "${related:-}" ]]; then
+        local related_arr
+        related_arr=$(echo "$related" | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+        payload=$(echo "$payload" | jq --argjson r "$related_arr" '. + {related: $r}')
     fi
     api_call "POST" "/memory" "$payload"
 }
 
 # Subcommand: read
 cmd_read() {
-    local key="" limit=100
+    local key="" sort="created_at" limit=100 offset=0
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --key) key="$2"; shift 2 ;;
-            --limit) limit="$2"; shift 2 ;;
-            *) echo "Unknown option: $1" >&2; return 1 ;;
+            --key)    key="$2";    shift 2 ;;
+            --sort)   sort="$2";   shift 2 ;;
+            --limit)  limit="$2";  shift 2 ;;
+            --offset) offset="$2"; shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
         esac
     done
 
-    local query=""
-    if [[ -n "${key:-}" ]]; then
-        query="key=$key"
-    fi
-    if [[ -n "${limit:-}" ]]; then
-        if [[ -n "${query:-}" ]]; then
-            query="${query}&limit=$limit"
-        else
-            query="limit=$limit"
-        fi
-    fi
-
-    local endpoint="/memory"
-    if [[ -n "${query:-}" ]]; then
-        endpoint="${endpoint}?${query}"
-    fi
-
-    api_call "GET" "$endpoint"
+    local query="sort=${sort}&limit=${limit}&offset=${offset}"
+    [[ -n "${key:-}" ]] && query="key=${key}&${query}"
+    api_call "GET" "/memory?${query}"
 }
 
 # Subcommand: forget
@@ -167,9 +132,145 @@ cmd_forget() {
     api_call "DELETE" "/memory?key=$key"
 }
 
+# Subcommand: search
+cmd_search() {
+    local query="" limit=10 threshold=0.3
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --query)     query="$2";     shift 2 ;;
+            --limit)     limit="$2";     shift 2 ;;
+            --threshold) threshold="$2"; shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    if [[ -z "${query:-}" ]]; then
+        echo "Error: --query is required." >&2
+        return 1
+    fi
+
+    local payload
+    payload=$(jq -n \
+        --arg q "$query" \
+        --argjson l "$limit" \
+        --argjson t "$threshold" \
+        '{query: $q, limit: $l, threshold: $t}')
+    api_call "POST" "/memory/search" "$payload"
+}
+
 # Subcommand: me
 cmd_me() {
     api_call "GET" "/me"
+}
+
+# Subcommand: ping  (健康检查，调用无需认证的 /server/time 端点)
+cmd_ping() {
+    # /server/time 无需 Authorization header
+    local url="${API_BASE}/server/time"
+    response=$(curl -s "$url" || true)
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq .
+    else
+        echo "$response"
+    fi
+}
+
+# Subcommand: log  (sub-subcommands: write, list, stats)
+cmd_log() {
+    local subcmd="${1:-}"
+    [[ $# -gt 0 ]] && shift
+
+    case "$subcmd" in
+        write) cmd_log_write "$@" ;;
+        list)  cmd_log_list  "$@" ;;
+        stats) cmd_log_stats "$@" ;;
+        "")
+            echo "Error: 'log' requires a subcommand: write | list | stats" >&2
+            echo "Run 'agentmm help' for usage information." >&2
+            exit 1
+            ;;
+        *)
+            echo "Error: Unknown log subcommand '$subcmd'" >&2
+            echo "Run 'agentmm help' for usage information." >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_log_write() {
+    local level="info" category="general" title="" content="" metadata="{}" duration_ms="" task_id=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --level)       level="$2";       shift 2 ;;
+            --category)    category="$2";    shift 2 ;;
+            --title)       title="$2";       shift 2 ;;
+            --content)     content="$2";     shift 2 ;;
+            --metadata)    metadata="$2";    shift 2 ;;
+            --duration-ms) duration_ms="$2"; shift 2 ;;
+            --task-id)     task_id="$2";     shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    if [[ -z "${title:-}" ]]; then
+        echo "Error: --title is required." >&2
+        return 1
+    fi
+
+    local payload
+    payload=$(jq -n \
+        --arg lv  "$level" \
+        --arg cat "$category" \
+        --arg tit "$title" \
+        --arg con "$content" \
+        --argjson meta "$metadata" \
+        '{level: $lv, category: $cat, title: $tit, content: $con, metadata: $meta}')
+
+    if [[ -n "${duration_ms:-}" ]]; then
+        payload=$(echo "$payload" | jq --argjson d "$duration_ms" '. + {duration_ms: $d}')
+    fi
+    if [[ -n "${task_id:-}" ]]; then
+        payload=$(echo "$payload" | jq --arg tid "$task_id" '. + {task_id: $tid}')
+    fi
+
+    api_call "POST" "/log" "$payload"
+}
+
+cmd_log_list() {
+    local level="" category="" task_id="" since="" limit=50 offset=0
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --level)    level="$2";    shift 2 ;;
+            --category) category="$2"; shift 2 ;;
+            --task-id)  task_id="$2";  shift 2 ;;
+            --since)    since="$2";    shift 2 ;;
+            --limit)    limit="$2";    shift 2 ;;
+            --offset)   offset="$2";   shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    local query="limit=${limit}&offset=${offset}"
+    [[ -n "${level:-}"    ]] && query="${query}&level=${level}"
+    [[ -n "${category:-}" ]] && query="${query}&category=${category}"
+    [[ -n "${task_id:-}"  ]] && query="${query}&task_id=${task_id}"
+    [[ -n "${since:-}"    ]] && query="${query}&since=${since}"
+
+    api_call "GET" "/log/list?${query}"
+}
+
+cmd_log_stats() {
+    local since=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --since) since="$2"; shift 2 ;;
+            *) echo "Error: Unknown option: $1" >&2; return 1 ;;
+        esac
+    done
+
+    local endpoint="/log/stats"
+    [[ -n "${since:-}" ]] && endpoint="${endpoint}?since=${since}"
+    api_call "GET" "$endpoint"
 }
 
 # Subcommand: help
@@ -180,60 +281,83 @@ AgentMM Unified CLI
 Usage:
   agentmm <command> [options]
 
-Commands:
-  send       Send an email
-    --to <address>     Recipient email address
-    --subject <text>   Email subject
-    --content <text>   Email body (plain text)
+记忆操作：
+  write      写入记忆
+    --key <key>          记忆唯一标识（必填）
+    --content <value>    记忆内容（必填）
+    --tags <t1,t2>       逗号分隔的标签（可选）
+    --context <text>     上下文信息（可选）
+    --related <k1,k2>    关联记忆的 key，逗号分隔（可选）
 
-  list       List emails
-    --limit <num>      Number of emails to return (default: 10)
-    --offset <num>     Offset for pagination (default: 0)
+  read       查询记忆
+    --key <key>          指定 key（省略则返回全部）
+    --sort <field>       created_at|updated_at|importance_score（默认：created_at）
+    --limit <num>        最多返回条数（默认：100）
+    --offset <num>       分页偏移（默认：0）
 
-  write      Write a memory entry
-    --key <key>        Memory key
-    --content <value>  Memory value (string)
-    --ttl <seconds>    Time to live in seconds (optional)
+  search     搜索记忆
+    --query <text>       搜索内容（必填）
+    --limit <num>        最多返回条数（默认：10）
+    --threshold <float>  相似度阈値 0-1（默认：0.3）
 
-  read       Read memory entries
-    --key <key>        Memory key to read (if omitted, returns all memories)
-    --limit <num>      Number of entries to return (default: 100)
+  forget     遗忘（软删除）记忆
+    --key <key>          记忆 key（必填）
 
-  forget     Delete a memory entry
-    --key <key>        Memory key to delete
+日志操作：
+  log write  写入日志
+    --title <text>       日志标题（必填）
+    --level <level>      debug|info|warn|error|fatal（默认：info）
+    --category <cat>     分类标签（默认：general）
+    --content <text>     日志详情（可选）
+    --task-id <id>       关联任务 ID（可选）
+    --duration-ms <ms>   耗时（可选）
+    --metadata <json>    JSON 格式附加数据（可选）
 
-  me         Get agent identity information
+  log list   查询日志列表
+    --level <level>      按级别过滤（可选）
+    --category <cat>     按分类过滤（可选）
+    --task-id <id>       按任务 ID 过滤（可选）
+    --since <timestamp>  Unix 秒级时间戳（可选）
+    --limit <num>        最多返回条数（默认：50）
+    --offset <num>       分页偏移（默认：0）
 
-  help       Show this help message
+  log stats  日志统计（错误率、平均耗时、级别分布）
+    --since <timestamp>  统计起始时间（可选）
 
-Environment Variables:
-  AGENTMM_API_BASE   Base URL of the AgentMM API (overrides config)
-  AGENTMM_API_KEY    API key for authentication (overrides config)
+其他：
+  me         查看当前 Agent 信息
+  ping       健康检查
+  help       显示帮助信息
 
-Configuration File:
-  ${CONFIG_FILE}
-    API_BASE="https://your-api-endpoint"
-    API_KEY="your_api_key_here"
+环境变量：
+  AGENTMM_API_KEY    API Key（必填，格式：amm_sk_xxx）
+  AGENTMM_API_BASE   API 地址（可选，默认：https://api.agentmm.site）
 
-Examples:
-  agentmm send --to "user@example.com" --subject "Hello" --content "Hello, world!"
-  agentmm write --key "settings" --content '{"theme":"dark"}'
-  agentmm read --key "settings"
-  agentmm list --limit 5
+示例：
+  agentmm write --key "user_pref" --content "偏好中文回复"
+  agentmm search --query "用户偏好"
+  agentmm log write --level info --title "任务完成" --task-id task_001
+  agentmm log list --level error --limit 20
 EOF
 }
 
 # Main dispatch
 case "${1:-}" in
-    send) shift; cmd_send "$@" ;;
-    list) shift; cmd_list "$@" ;;
-    write) shift; cmd_write "$@" ;;
-    read) shift; cmd_read "$@" ;;
-    forget) shift; cmd_forget "$@" ;;
-    me) shift; cmd_me "$@" ;;
-    help|--help|-h) cmd_help ;;
+    write)        shift; cmd_write  "$@" ;;
+    read)         shift; cmd_read   "$@" ;;
+    search)       shift; cmd_search "$@" ;;
+    forget)       shift; cmd_forget "$@" ;;
+    log)          shift; cmd_log    "$@" ;;
+    me)           shift; cmd_me           ;;
+    ping)         shift; cmd_ping         ;;
+    help|--help|-h)     cmd_help          ;;
+    "")
+        echo "Error: No command specified." >&2
+        echo "Run 'agentmm help' for usage information." >&2
+        exit 1
+        ;;
     *)
-        echo "Error: Unknown command '$1'" >&2
+        echo "Error: Unknown command '${1}'." >&2
         echo "Run 'agentmm help' for usage information." >&2
         exit 1
         ;;

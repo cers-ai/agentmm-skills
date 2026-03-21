@@ -1,8 +1,16 @@
 #!/bin/bash
+# forget_memory.sh — 遗忘（软删除）一条记忆
+# 用法: forget_memory.sh --key <key>
+#
+# SECURITY MANIFEST:
+#   Environment variables accessed: AGENTMM_API_KEY, AGENTMM_API_BASE (only)
+#   External endpoints called: https://api.agentmm.site/memory (DELETE, only)
+#   Local files read: none
+#   Local files written: none
 set -euo pipefail
 
-API_BASE="https://vszkvwrcccfyyipdtcvr.supabase.co/functions/v1/agent-api"
-API_KEY="amm_sk_c37620f5a839416398b9364512aa8a17"
+API_BASE="${AGENTMM_API_BASE:-https://api.agentmm.site}"
+API_KEY="${AGENTMM_API_KEY:?Error: AGENTMM_API_KEY environment variable is not set. Format: amm_sk_xxx}"
 
 # Parse arguments
 KEY=""
